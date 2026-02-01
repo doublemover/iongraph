@@ -65,6 +65,7 @@ const packPass = pass => ([
   intern(pass.name),
   (pass.mir?.blocks ?? []).map(packMirBlock),
   (pass.lir?.blocks ?? []).map(packLirBlock),
+  pass.liveRanges ?? null,
 ]);
 
 const packFunc = func => ([

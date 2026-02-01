@@ -1,18 +1,25 @@
 import { dequal } from "./dequal.js";
 import { E } from "./dom.js";
 import { Graph, type GraphOptions, type GraphState, type InspectTarget } from "./Graph.js";
-import type { BlockPtr, Func, Pass, SampleCounts } from "./iongraph.js";
+import type { BlockID, BlockPtr, Func, InsID, Pass, SampleCounts } from "./iongraph.js";
 
 type KeyPasses = [number | null, number | null, number | null, number | null];
 type PaletteMode = "search" | "block" | "instruction";
 
-type SearchEntry = {
-  kind: "block" | "instruction",
-  id: number,
-  ptr?: BlockPtr,
-  label: string,
-  searchText: string,
-};
+type SearchEntry =
+  | {
+    kind: "block",
+    id: BlockID,
+    ptr: BlockPtr,
+    label: string,
+    searchText: string,
+  }
+  | {
+    kind: "instruction",
+    id: InsID,
+    label: string,
+    searchText: string,
+  };
 
 export interface GraphViewerProps {
   func: Func,

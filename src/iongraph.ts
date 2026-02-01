@@ -51,6 +51,7 @@ export type PassV2 = [
   StringIndex,
   MIRBlockV2[],
   LIRBlockV2[],
+  (LiveRanges | null)?,
 ];
 
 export type FuncV2 = [
@@ -163,7 +164,7 @@ function inflateV2ToV1(ionJSON: IonJSONv2): IonJSON {
     normalizedVersion: currentVersion,
     functions: ionJSON.functions.map(([funcNameIndex, passes]) => ({
       name: getString(funcNameIndex),
-      passes: passes.map(([passNameIndex, mirBlocks, lirBlocks]) => ({
+      passes: passes.map(([passNameIndex, mirBlocks, lirBlocks, liveRanges]) => ({
         name: getString(passNameIndex),
         mir: {
           blocks: mirBlocks.map(([ptr, id, loopDepth, attrIdxs, preds, succs, instructions]) => ({
@@ -202,6 +203,7 @@ function inflateV2ToV1(ionJSON: IonJSONv2): IonJSON {
             })),
           })),
         },
+        liveRanges: liveRanges ?? undefined,
       })),
     })),
   };

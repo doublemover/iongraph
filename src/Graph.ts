@@ -1656,6 +1656,7 @@ export class Graph {
       .replace('->', '→')
       .replace('<-', '←');
 
+    const enableVregs = this.display.liveRangesMode && this.liveRangesByVreg.size > 0;
     const row = document.createElement("tr");
     row.classList.add("ig-ins", "ig-ins-lir", "ig-hotness");
     row.setAttribute("data-ig-ins-ptr", `${ins.ptr}`);
@@ -1682,7 +1683,11 @@ export class Graph {
     }
 
     const opcode = document.createElement("td");
-    opcode.innerText = prettyOpcode;
+    if (enableVregs) {
+      this.appendOpcodeWithUses(opcode, prettyOpcode, { enableUses: false, enableVregs });
+    } else {
+      opcode.innerText = prettyOpcode;
+    }
     row.appendChild(opcode);
 
     if (this.sampleCounts) {
@@ -1729,8 +1734,14 @@ export class Graph {
     return row;
   }
 
-  private appendOpcodeWithUses(target: HTMLElement, opcodeText: string) {
-    const enableVregs = this.display.liveRangesMode && this.liveRangesByVreg.size > 0;
+  private appendOpcodeWithUses(
+    target: HTMLElement,
+    opcodeText: string,
+    options: { enableUses?: boolean, enableVregs?: boolean } = {},
+  ) {
+    const enableUses = options.enableUses ?? true;
+    const enableVregs = options.enableVregs
+      ?? (this.display.liveRangesMode && this.liveRangesByVreg.size > 0);
     const reToken = /([A-Za-z0-9_]+#\d+|v\d+)/g;
     let lastIndex = 0;
     for (const match of opcodeText.matchAll(reToken)) {
@@ -1741,6 +1752,11 @@ export class Graph {
 
       const token = match[0];
       if (token.includes("#")) {
+        if (!enableUses) {
+          target.appendChild(document.createTextNode(token));
+          lastIndex = matchIndex + match[0].length;
+          continue;
+        }
         const [name, idText] = token.split("#");
         const id = parseInt(idText, 10) as InsID;
 
