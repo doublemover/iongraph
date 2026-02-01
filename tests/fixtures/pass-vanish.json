@@ -1,0 +1,90 @@
+{
+  "version": 1,
+  "functions": [
+    {
+      "name": "pass-vanish",
+      "passes": [
+        {
+          "name": "PassA",
+          "mir": {
+            "blocks": [
+              {
+                "ptr": 1,
+                "id": 0,
+                "loopDepth": 0,
+                "attributes": [],
+                "predecessors": [],
+                "successors": [7],
+                "instructions": [
+                  {
+                    "ptr": 1,
+                    "id": 1,
+                    "opcode": "Entry",
+                    "attributes": [],
+                    "inputs": [],
+                    "uses": [],
+                    "memInputs": [],
+                    "type": "void"
+                  }
+                ]
+              },
+              {
+                "ptr": 8,
+                "id": 7,
+                "loopDepth": 0,
+                "attributes": [],
+                "predecessors": [0],
+                "successors": [],
+                "instructions": [
+                  {
+                    "ptr": 2,
+                    "id": 2,
+                    "opcode": "Target",
+                    "attributes": [],
+                    "inputs": [],
+                    "uses": [],
+                    "memInputs": [],
+                    "type": "int32"
+                  }
+                ]
+              }
+            ]
+          },
+          "lir": {
+            "blocks": []
+          }
+        },
+        {
+          "name": "PassB",
+          "mir": {
+            "blocks": [
+              {
+                "ptr": 1,
+                "id": 0,
+                "loopDepth": 0,
+                "attributes": [],
+                "predecessors": [],
+                "successors": [],
+                "instructions": [
+                  {
+                    "ptr": 3,
+                    "id": 3,
+                    "opcode": "EntryB",
+                    "attributes": [],
+                    "inputs": [],
+                    "uses": [],
+                    "memInputs": [],
+                    "type": "void"
+                  }
+                ]
+              }
+            ]
+          },
+          "lir": {
+            "blocks": []
+          }
+        }
+      ]
+    }
+  ]
+}

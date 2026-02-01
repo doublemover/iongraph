@@ -4,5 +4,6 @@ sample*.json
 node_modules/
 dist/
 dist-www/
+test-results/
 .DS_Store
 

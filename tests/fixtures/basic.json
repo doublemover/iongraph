@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "functions": [
+    {
+      "name": "basic",
+      "passes": [
+        {
+          "name": "Init",
+          "mir": {
+            "blocks": [
+              {
+                "ptr": 1,
+                "id": 0,
+                "loopDepth": 0,
+                "attributes": [],
+                "predecessors": [],
+                "successors": [],
+                "instructions": [
+                  {
+                    "ptr": 1,
+                    "id": 1,
+                    "opcode": "Start",
+                    "attributes": [],
+                    "inputs": [],
+                    "uses": [],
+                    "memInputs": [],
+                    "type": "void"
+                  },
+                  {
+                    "ptr": 2,
+                    "id": 2,
+                    "opcode": "Constant 1",
+                    "attributes": [],
+                    "inputs": [],
+                    "uses": [],
+                    "memInputs": [],
+                    "type": "int32"
+                  },
+                  {
+                    "ptr": 3,
+                    "id": 3,
+                    "opcode": "Return",
+                    "attributes": [],
+                    "inputs": [],
+                    "uses": [],
+                    "memInputs": [],
+                    "type": "void"
+                  }
+                ]
+              }
+            ]
+          },
+          "lir": {
+            "blocks": []
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "functions": [
+    {
+      "name": "loop",
+      "passes": [
+        {
+          "name": "LoopPass",
+          "mir": {
+            "blocks": [
+              {
+                "ptr": 1,
+                "id": 0,
+                "loopDepth": 0,
+                "attributes": [],
+                "predecessors": [],
+                "successors": [1],
+                "instructions": [
+                  {
+                    "ptr": 1,
+                    "id": 1,
+                    "opcode": "Entry",
+                    "attributes": [],
+                    "inputs": [],
+                    "uses": [],
+                    "memInputs": [],
+                    "type": "void"
+                  }
+                ]
+              },
+              {
+                "ptr": 2,
+                "id": 1,
+                "loopDepth": 1,
+                "attributes": ["loopheader"],
+                "predecessors": [0, 2],
+                "successors": [2],
+                "instructions": [
+                  {
+                    "ptr": 2,
+                    "id": 2,
+                    "opcode": "LoopHeader",
+                    "attributes": [],
+                    "inputs": [],
+                    "uses": [],
+                    "memInputs": [],
+                    "type": "void"
+                  }
+                ]
+              },
+              {
+                "ptr": 3,
+                "id": 2,
+                "loopDepth": 1,
+                "attributes": ["backedge"],
+                "predecessors": [1],
+                "successors": [1],
+                "instructions": [
+                  {
+                    "ptr": 3,
+                    "id": 3,
+                    "opcode": "Backedge",
+                    "attributes": [],
+                    "inputs": [],
+                    "uses": [],
+                    "memInputs": [],
+                    "type": "void"
+                  }
+                ]
+              }
+            ]
+          },
+          "lir": {
+            "blocks": []
+          }
+        }
+      ]
+    }
+  ]
+}

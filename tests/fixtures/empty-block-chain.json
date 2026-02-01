@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "functions": [
+    {
+      "name": "empty-block-chain",
+      "passes": [
+        {
+          "name": "EmptyChain",
+          "mir": {
+            "blocks": [
+              {
+                "ptr": 1,
+                "id": 0,
+                "loopDepth": 0,
+                "attributes": [],
+                "predecessors": [],
+                "successors": [1],
+                "instructions": [
+                  {
+                    "ptr": 1,
+                    "id": 1,
+                    "opcode": "Start",
+                    "attributes": [],
+                    "inputs": [],
+                    "uses": [],
+                    "memInputs": [],
+                    "type": "void"
+                  }
+                ]
+              },
+              {
+                "ptr": 2,
+                "id": 1,
+                "loopDepth": 0,
+                "attributes": [],
+                "predecessors": [0],
+                "successors": [2],
+                "instructions": []
+              },
+              {
+                "ptr": 3,
+                "id": 2,
+                "loopDepth": 0,
+                "attributes": [],
+                "predecessors": [1],
+                "successors": [],
+                "instructions": [
+                  {
+                    "ptr": 2,
+                    "id": 2,
+                    "opcode": "Return",
+                    "attributes": [],
+                    "inputs": [],
+                    "uses": [],
+                    "memInputs": [],
+                    "type": "void"
+                  }
+                ]
+              }
+            ]
+          },
+          "lir": {
+            "blocks": []
+          }
+        }
+      ]
+    }
+  ]
+}

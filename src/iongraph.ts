@@ -1,8 +1,67 @@
 export const currentVersion = 1 as const;
 
 export interface IonJSON {
-  version: typeof currentVersion,
+  version: number,
+  normalizedVersion?: typeof currentVersion,
   functions: Func[],
+}
+
+export interface IonJSONv1 extends IonJSON {
+  version: 1,
+}
+
+export type StringIndex = number;
+
+export type MIRInstructionV2 = [
+  InsPtr,
+  InsID,
+  StringIndex,
+  StringIndex[],
+  number[],
+  number[],
+  unknown[],
+  StringIndex,
+];
+
+export type MIRBlockV2 = [
+  BlockPtr,
+  BlockID,
+  number,
+  StringIndex[],
+  BlockID[],
+  BlockID[],
+  MIRInstructionV2[],
+];
+
+export type LIRInstructionV2 = [
+  InsPtr,
+  InsID,
+  InsPtr | null,
+  StringIndex,
+  number[],
+];
+
+export type LIRBlockV2 = [
+  BlockPtr,
+  BlockID,
+  LIRInstructionV2[],
+];
+
+export type PassV2 = [
+  StringIndex,
+  MIRBlockV2[],
+  LIRBlockV2[],
+];
+
+export type FuncV2 = [
+  StringIndex,
+  PassV2[],
+];
+
+export interface IonJSONv2 {
+  version: 2,
+  strings: string[],
+  functions: FuncV2[],
 }
 
 export interface Func {
@@ -18,6 +77,7 @@ export interface Pass {
   lir: {
     blocks: LIRBlock[],
   },
+  liveRanges?: LiveRanges,
 }
 
 export type BlockPtr = number & { readonly __brand: "BlockPtr" }
@@ -33,6 +93,8 @@ export interface MIRBlock {
   predecessors: BlockID[],
   successors: BlockID[],
   instructions: MIRInstruction[],
+  source?: SourceLoc,
+  metadata?: Record<string, unknown>,
 }
 
 export interface MIRInstruction {
@@ -44,6 +106,8 @@ export interface MIRInstruction {
   uses: number[],
   memInputs: unknown[], // TODO
   type: string,
+  source?: SourceLoc,
+  metadata?: Record<string, unknown>,
 }
 
 export interface LIRBlock {
@@ -58,11 +122,89 @@ export interface LIRInstruction {
   mirPtr: number | null,
   opcode: string,
   defs: number[],
+  source?: SourceLoc,
+  metadata?: Record<string, unknown>,
+}
+
+export interface SourceLoc {
+  script?: string,
+  line?: number,
+  column?: number,
+  bytecodeOffset?: number,
+  inlineStack?: SourceLoc[],
+}
+
+export interface LiveRangeInterval {
+  start: number,
+  end: number,
+}
+
+export interface LiveRange {
+  vreg: string,
+  intervals: LiveRangeInterval[],
+  reg?: string,
+}
+
+export interface LiveRanges {
+  vregs: LiveRange[],
 }
 
 export interface SampleCounts {
   selfLineHits: Map<number, number>,
   totalLineHits: Map<number, number>,
+}
+
+function inflateV2ToV1(ionJSON: IonJSONv2): IonJSON {
+  const strings = ionJSON.strings ?? [];
+  const getString = (index: number) => strings[index] ?? "";
+
+  return {
+    version: currentVersion,
+    normalizedVersion: currentVersion,
+    functions: ionJSON.functions.map(([funcNameIndex, passes]) => ({
+      name: getString(funcNameIndex),
+      passes: passes.map(([passNameIndex, mirBlocks, lirBlocks]) => ({
+        name: getString(passNameIndex),
+        mir: {
+          blocks: mirBlocks.map(([ptr, id, loopDepth, attrIdxs, preds, succs, instructions]) => ({
+            ptr: ptr as any as BlockPtr,
+            id: id as any as BlockID,
+            loopDepth,
+            attributes: (attrIdxs ?? []).map(getString),
+            predecessors: preds as any as BlockID[],
+            successors: succs as any as BlockID[],
+            instructions: instructions.map(ins => {
+              const memInputs = ins[6] ?? [];
+              const typeIndex = ins[7] ?? -1;
+              return {
+                ptr: ins[0] as any as InsPtr,
+                id: ins[1] as any as InsID,
+                opcode: getString(ins[2]),
+                attributes: (ins[3] ?? []).map(getString),
+                inputs: ins[4] ?? [],
+                uses: ins[5] ?? [],
+                memInputs,
+                type: typeIndex >= 0 ? getString(typeIndex) : "",
+              };
+            }),
+          })),
+        },
+        lir: {
+          blocks: lirBlocks.map(([ptr, id, instructions]) => ({
+            ptr: ptr as any as BlockPtr,
+            id: id as any as BlockID,
+            instructions: instructions.map(ins => ({
+              ptr: ins[0] as any as InsPtr,
+              id: ins[1] as any as InsID,
+              mirPtr: ins[2] ?? null,
+              opcode: getString(ins[3]),
+              defs: ins[4] ?? [],
+            })),
+          })),
+        },
+      })),
+    })),
+  };
 }
 
 /**
@@ -74,12 +216,22 @@ export function migrate(ionJSON: any): IonJSON {
     ionJSON.version = 0;
   }
 
-  for (const f of ionJSON.functions) {
-    migrateFunc(f, ionJSON.version);
+  const sourceVersion = ionJSON.version;
+  let normalized: IonJSON;
+  if (sourceVersion === 2) {
+    normalized = inflateV2ToV1(ionJSON as IonJSONv2);
+  } else {
+    normalized = ionJSON as IonJSON;
   }
 
-  ionJSON.version = currentVersion;
-  return ionJSON;
+  const migrationVersion = sourceVersion === 2 ? currentVersion : sourceVersion;
+  for (const f of normalized.functions) {
+    migrateFunc(f, migrationVersion);
+  }
+
+  normalized.version = sourceVersion === 2 ? 2 : currentVersion;
+  normalized.normalizedVersion = currentVersion;
+  return normalized;
 }
 
 function migrateFunc(f: any, version: number): Func {
@@ -152,5 +304,9 @@ function migrateLIRInstruction(ins: any, version: number): LIRInstruction {
     stably identified by their corresponding MIR block.
   - Added "mirPtr" to LIR instructions so that they can be traced back to their
     MIR instruction. May be null.
+
+- Version 2: Compact schema with string tables and tuple encoding. The viewer
+  inflates this format to a normalized v1-shaped representation, keeping
+  `version: 2` and setting `normalizedVersion` to the current version.
 
 */

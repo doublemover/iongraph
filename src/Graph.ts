@@ -1,4 +1,4 @@
-import type { MIRBlock, LIRBlock, LIRInstruction, MIRInstruction, Pass, SampleCounts, BlockID, BlockPtr, InsPtr, InsID } from "./iongraph.js";
+import type { MIRBlock, LIRBlock, LIRInstruction, MIRInstruction, Pass, SampleCounts, BlockID, BlockPtr, InsPtr, InsID, LiveRange } from "./iongraph.js";
 import { tweak } from "./tweak.js";
 import { assert, clamp, filerp, must } from "./utils.js";
 
@@ -48,7 +48,7 @@ type LoopHeader = Block & {
   loopHeight: number,
   parentLoop: LoopHeader | null,
   outgoingEdges: Block[],
-  backedge: Block,
+  backedges: Block[],
 }
 
 function isTrueLH(block: Block): block is LoopHeader {
@@ -148,6 +148,17 @@ export interface RestoreStateOpts {
   preserveSelectedBlockPosition?: boolean,
 }
 
+export type GraphCompactMode = "default" | "compact" | "verbose";
+
+export interface GraphDisplayOptions {
+  showInstructionIds: boolean,
+  showTypes: boolean,
+  showUseIds: boolean,
+  compactMode: GraphCompactMode,
+  collapseEmptyBlocks: boolean,
+  liveRangesMode: boolean,
+}
+
 export interface GraphOptions {
   /**
    * Sample counts to display when viewing the LIR graph.
@@ -159,7 +170,28 @@ export interface GraphOptions {
    * encouraged to use CSS variables here.
    */
   instructionPalette?: string[],
+
+  /**
+   * Collapse trivial goto-only blocks in the MIR graph.
+   */
+  collapseEmptyBlocks?: boolean,
+
+  /**
+   * Display configuration for the graph.
+   */
+  display?: Partial<GraphDisplayOptions>,
+
+  /**
+   * Optional inspector callback for blocks and instructions.
+   */
+  onInspect?: (target: InspectTarget) => void,
 }
+
+export type InspectTarget =
+  | { kind: "block", block: MIRBlock, lir?: LIRBlock | null }
+  | { kind: "mir-instruction", instruction: MIRInstruction }
+  | { kind: "lir-instruction", instruction: LIRInstruction }
+  | { kind: "vreg", liveRange: LiveRange };
 
 export class Graph {
   //
@@ -168,6 +200,7 @@ export class Graph {
   viewport: HTMLElement
   viewportSize: Vec2;
   graphContainer: HTMLElement;
+  svg: SVGSVGElement | null;
 
   //
   // Core iongraph data
@@ -177,7 +210,14 @@ export class Graph {
   blocksByPtr: Map<BlockPtr, Block>;
   insPtrsByID: Map<InsID, InsPtr>;
   insIDsByPtr: Map<InsPtr, InsID>;
+  insRowByPtr: Map<InsPtr, HTMLElement>;
+  useElsByInsId: Map<InsID, HTMLElement[]>;
+  activeHighlightsByPtr: Map<InsPtr, number>;
   loops: LoopHeader[];
+  collapsedBlocksBySuccessor: Map<BlockID, BlockID[]>;
+  liveRangesByVreg: Map<string, LiveRange>;
+  activeLiveRangeVreg: string | null;
+  liveRangeHighlightedPtrs: Set<InsPtr>;
 
   sampleCounts: SampleCounts | undefined;
   maxSampleCounts: [number, number]; // [total, self]
@@ -201,6 +241,7 @@ export class Graph {
 
   startMousePos: Readonly<Vec2>;
   lastMousePos: Readonly<Vec2>;
+  hoveredEdge: SVGGElement | null;
 
   //
   // Block and instruction selection / navigation
@@ -211,6 +252,8 @@ export class Graph {
 
   highlightedInstructions: HighlightedInstruction[];
   instructionPalette: string[];
+  display: GraphDisplayOptions;
+  onInspect: ((target: InspectTarget) => void) | null;
 
   constructor(viewport: HTMLElement, pass: Pass, options: GraphOptions = {}) {
     this.viewport = viewport;
@@ -224,6 +267,35 @@ export class Graph {
     this.graphContainer.classList.add("ig-graph");
     this.graphContainer.style.transformOrigin = "top left";
     this.viewport.appendChild(this.graphContainer);
+    this.svg = null;
+
+    const defaultDisplay: GraphDisplayOptions = {
+      showInstructionIds: true,
+      showTypes: true,
+      showUseIds: true,
+      compactMode: "default",
+      collapseEmptyBlocks: false,
+      liveRangesMode: false,
+    };
+    const displayOverrides = options.display ?? {};
+    const compactMode = displayOverrides.compactMode ?? defaultDisplay.compactMode;
+    const normalizedCompactMode: GraphCompactMode = (
+      compactMode === "compact" || compactMode === "verbose" || compactMode === "default"
+        ? compactMode
+        : "default"
+    );
+    this.display = {
+      ...defaultDisplay,
+      ...displayOverrides,
+      compactMode: normalizedCompactMode,
+      collapseEmptyBlocks: options.collapseEmptyBlocks ?? displayOverrides.collapseEmptyBlocks ?? defaultDisplay.collapseEmptyBlocks,
+    };
+    this.onInspect = options.onInspect ?? null;
+    if (this.display.compactMode === "compact") {
+      this.graphContainer.classList.add("ig-compact");
+    } else if (this.display.compactMode === "verbose") {
+      this.graphContainer.classList.add("ig-verbose");
+    }
 
     this.sampleCounts = options.sampleCounts;
     this.maxSampleCounts = [0, 0];
@@ -248,6 +320,7 @@ export class Graph {
 
     this.startMousePos = { x: 0, y: 0 };
     this.lastMousePos = { x: 0, y: 0 };
+    this.hoveredEdge = null;
 
     this.selectedBlockPtrs = new Set();
     this.lastSelectedBlockPtr = 0 as BlockPtr;
@@ -290,7 +363,20 @@ export class Graph {
     this.blocksByPtr = new Map();
     this.insPtrsByID = new Map();
     this.insIDsByPtr = new Map();
+    this.insRowByPtr = new Map();
+    this.useElsByInsId = new Map();
+    this.activeHighlightsByPtr = new Map();
     this.loops = []; // top-level loops; this basically forms the root of the loop tree
+    this.collapsedBlocksBySuccessor = new Map();
+    this.liveRangesByVreg = new Map();
+    this.activeLiveRangeVreg = null;
+    this.liveRangeHighlightedPtrs = new Set();
+
+    if (pass.liveRanges?.vregs) {
+      for (const liveRange of pass.liveRanges.vregs) {
+        this.liveRangesByVreg.set(liveRange.vreg, liveRange);
+      }
+    }
 
     // Initialize maps
     for (const block of this.blocks) {
@@ -319,9 +405,12 @@ export class Graph {
 
       if (isTrueLH(block)) {
         const backedges = block.preds.filter(b => b.mir.attributes.includes("backedge"));
-        assert(backedges.length === 1);
-        block.backedge = backedges[0];
+        block.backedges = backedges;
       }
+    }
+
+    if (this.display.collapseEmptyBlocks) {
+      this.collapseTrivialBlocks();
     }
 
     // Render blocks
@@ -360,9 +449,9 @@ export class Graph {
       root.loopHeight = 0;
       root.parentLoop = null;
       root.outgoingEdges = [];
-      Object.defineProperty(root, "backedge", {
+      Object.defineProperty(root, "backedges", {
         get() {
-          throw new Error("Accessed .backedge on a pseudo loop header! Don't do that.");
+          throw new Error("Accessed .backedges on a pseudo loop header! Don't do that.");
         },
         configurable: true,
       });
@@ -436,6 +525,80 @@ export class Graph {
       }
     }
     return [newRoots, osrBlocks];
+  }
+
+  private collapseTrivialBlocks() {
+    const skipAttributes = new Set(["loopheader", "backedge", "osr", "splitedge"]);
+
+    const dedupeBlocks = (blocks: Block[]) => {
+      const seen = new Set<BlockPtr>();
+      const result: Block[] = [];
+      for (const b of blocks) {
+        if (seen.has(b.ptr)) {
+          continue;
+        }
+        seen.add(b.ptr);
+        result.push(b);
+      }
+      return result;
+    };
+
+    const dedupeIDs = (ids: BlockID[]) => {
+      const seen = new Set<BlockID>();
+      const result: BlockID[] = [];
+      for (const id of ids) {
+        if (seen.has(id)) {
+          continue;
+        }
+        seen.add(id);
+        result.push(id);
+      }
+      return result;
+    };
+
+    for (const block of [...this.blocks]) {
+      if (!this.blocksByID.has(block.id)) {
+        continue;
+      }
+      if (block.preds.length !== 1 || block.succs.length !== 1) {
+        continue;
+      }
+      if (block.mir.instructions.length !== 0) {
+        continue;
+      }
+      if (block.lir && block.lir.instructions.length !== 0) {
+        continue;
+      }
+      if (block.mir.attributes.some(att => skipAttributes.has(att))) {
+        continue;
+      }
+
+      const pred = block.preds[0];
+      const succ = block.succs[0];
+      if (pred === succ) {
+        continue;
+      }
+
+      pred.succs = dedupeBlocks(pred.succs.map(s => s === block ? succ : s));
+      pred.mir.successors = dedupeIDs(pred.mir.successors.map(id => id === block.id ? succ.id : id));
+
+      succ.preds = dedupeBlocks(succ.preds.map(p => p === block ? pred : p));
+      succ.mir.predecessors = dedupeIDs(succ.mir.predecessors.map(id => id === block.id ? pred.id : id));
+
+      const existing = this.collapsedBlocksBySuccessor.get(succ.id);
+      if (existing) {
+        existing.push(block.id);
+      } else {
+        this.collapsedBlocksBySuccessor.set(succ.id, [block.id]);
+      }
+
+      this.blocksByID.delete(block.id);
+      this.blocksByPtr.delete(block.ptr);
+      const index = this.blocks.indexOf(block);
+      if (index >= 0) {
+        this.blocks.splice(index, 1);
+      }
+    }
   }
 
   // Walks through the graph tracking which loop each block belongs to. As
@@ -667,28 +830,30 @@ export class Graph {
 
         // Create dummy nodes for backedges
         for (const loopDummy of pendingLoopDummies.filter(d => d.block === block)) {
-          const backedge = asLH(this.blocksByID.get(loopDummy.loopID)).backedge;
-          const backedgeDummy: DummyNode = {
-            id: nodeID++ as LayoutNodeID,
-            pos: { x: CONTENT_PADDING, y: CONTENT_PADDING },
-            size: { x: 0, y: 0 },
-            block: null,
-            srcNodes: [],
-            dstNodes: [],
-            dstBlock: backedge,
-            jointOffsets: [],
-            flags: 0,
-          };
+          const loopHeader = asLH(this.blocksByID.get(loopDummy.loopID));
+          for (const backedge of loopHeader.backedges) {
+            const backedgeDummy: DummyNode = {
+              id: nodeID++ as LayoutNodeID,
+              pos: { x: CONTENT_PADDING, y: CONTENT_PADDING },
+              size: { x: 0, y: 0 },
+              block: null,
+              srcNodes: [],
+              dstNodes: [],
+              dstBlock: backedge,
+              jointOffsets: [],
+              flags: 0,
+            };
 
-          const latestDummy = latestDummiesForBackedges.get(backedge);
-          if (latestDummy) {
-            connectNodes(backedgeDummy, 0, latestDummy);
-          } else {
-            backedgeDummy.flags |= IMMINENT_BACKEDGE_DUMMY;
-            connectNodes(backedgeDummy, 0, backedge.layoutNode);
+            const latestDummy = latestDummiesForBackedges.get(backedge);
+            if (latestDummy) {
+              connectNodes(backedgeDummy, 0, latestDummy);
+            } else {
+              backedgeDummy.flags |= IMMINENT_BACKEDGE_DUMMY;
+              connectNodes(backedgeDummy, 0, backedge.layoutNode);
+            }
+            layoutNodesByLayer[layer].push(backedgeDummy);
+            latestDummiesForBackedges.set(backedge, backedgeDummy);
           }
-          layoutNodesByLayer[layer].push(backedgeDummy);
-          latestDummiesForBackedges.set(backedge, backedgeDummy);
         }
 
         if (block.mir.attributes.includes("backedge")) {
@@ -1205,7 +1370,12 @@ export class Graph {
     }
     const header = document.createElement("div");
     header.classList.add("ig-block-header");
-    header.innerText = `Block ${block.id}${desc}`;
+    let headerText = `Block ${block.id}${desc}`;
+    const collapsed = this.collapsedBlocksBySuccessor.get(block.id);
+    if (collapsed?.length) {
+      headerText += ` (collapsed: ${collapsed.map(id => `B${id}`).join(", ")})`;
+    }
+    header.innerText = headerText;
     el.appendChild(header);
 
     const insnsContainer = document.createElement("div");
@@ -1214,36 +1384,43 @@ export class Graph {
 
     const insns = document.createElement("table");
     if (block.lir) {
+      const cols: string[] = [];
+      if (this.display.showInstructionIds) {
+        cols.push(`<col style="width: 1px">`);
+      }
+      cols.push(`<col style="width: auto">`);
+      if (this.sampleCounts) {
+        cols.push(`<col style="width: 1px">`, `<col style="width: 1px">`);
+      }
+
+      let header = "";
+      if (this.sampleCounts) {
+        const headers: string[] = [];
+        if (this.display.showInstructionIds) {
+          headers.push("<th></th>");
+        }
+        headers.push("<th></th>", `<th class="ig-f6">Total</th>`, `<th class="ig-f6">Self</th>`);
+        header = `<thead><tr>${headers.join("")}</tr></thead>`;
+      }
+
       insns.innerHTML = `
-        <colgroup>
-          <col style="width: 1px">
-          <col style="width: auto">
-          ${this.sampleCounts ? `
-            <col style="width: 1px">
-            <col style="width: 1px">
-          ` : ""}
-        </colgroup>
-        ${this.sampleCounts ? `
-          <thead>
-            <tr>
-              <th></th>
-              <th></th>
-              <th class="ig-f6">Total</th>
-              <th class="ig-f6">Self</th>
-            </tr>
-          </thead>
-        ` : ""}
+        <colgroup>${cols.join("")}</colgroup>
+        ${header}
       `;
       for (const ins of block.lir.instructions) {
         insns.appendChild(this.renderLIRInstruction(ins));
       }
     } else {
+      const cols: string[] = [];
+      if (this.display.showInstructionIds) {
+        cols.push(`<col style="width: 1px">`);
+      }
+      cols.push(`<col style="width: auto">`);
+      if (this.display.showTypes) {
+        cols.push(`<col style="width: 1px">`);
+      }
       insns.innerHTML = `
-        <colgroup>
-          <col style="width: 1px">
-          <col style="width: auto">
-          <col style="width: 1px">
-        </colgroup>
+        <colgroup>${cols.join("")}</colgroup>
       `;
       for (const ins of block.mir.instructions) {
         insns.appendChild(this.renderMIRInstruction(ins));
@@ -1273,6 +1450,7 @@ export class Graph {
         this.selectedBlockPtrs.clear();
       }
       this.setSelection([], block.ptr);
+      this.onInspect?.({ kind: "block", block: block.mir, lir: block.lir });
     });
 
     return el;
@@ -1301,6 +1479,18 @@ export class Graph {
     }
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     this.graphContainer.appendChild(svg);
+    this.svg = svg;
+
+    const decorateEdge = (edge: SVGElement, src: Block | null, dst: Block | null, kind: string) => {
+      edge.classList.add("ig-edge");
+      edge.setAttribute("data-ig-edge-kind", kind);
+      if (src) {
+        edge.setAttribute("data-ig-edge-src", `${src.ptr}`);
+      }
+      if (dst) {
+        edge.setAttribute("data-ig-edge-dst", `${dst.ptr}`);
+      }
+    };
 
     const trackPositions = (xs: number[], ys: number[]) => {
       for (const x of xs) {
@@ -1332,6 +1522,7 @@ export class Graph {
             const x2 = header.layoutNode.pos.x + header.size.x;
             const y2 = header.layoutNode.pos.y + HEADER_ARROW_PUSHDOWN;
             const arrow = loopHeaderArrow(x1, y1, x2, y2);
+            decorateEdge(arrow, node.block, header, "backedge");
             svg.appendChild(arrow);
             trackPositions([x1, x2], [y1, y2]);
           } else if (node.flags & IMMINENT_BACKEDGE_DUMMY) {
@@ -1342,6 +1533,7 @@ export class Graph {
             const x2 = backedge.layoutNode.pos.x + backedge.size.x;
             const y2 = backedge.layoutNode.pos.y + HEADER_ARROW_PUSHDOWN;
             const arrow = arrowToBackedge(x1, y1, x2, y2);
+            decorateEdge(arrow, null, backedge, "backedge");
             svg.appendChild(arrow);
             trackPositions([x1, x2], [y1, y2]);
           } else if (dst.block === null && dst.dstBlock.mir.attributes.includes("backedge")) {
@@ -1351,12 +1543,14 @@ export class Graph {
               // Draw upward arrow between dummies
               const ym = y1 - TRACK_PADDING; // this really shouldn't matter because we should straighten all these out
               const arrow = upwardArrow(x1, y1, x2, y2, ym, false);
+              decorateEdge(arrow, null, dst.dstBlock, "backedge");
               svg.appendChild(arrow);
               trackPositions([x1, x2], [y1, y2, ym]);
             } else {
               // Draw arrow to backedge dummy
               const ym = (y1 - node.size.y) + layerHeights[layer] + TRACK_PADDING + trackHeights[layer] / 2 + node.jointOffsets[i];
               const arrow = arrowFromBlockToBackedgeDummy(x1, y1, x2, y2, ym);
+              decorateEdge(arrow, node.block, dst.dstBlock, "backedge");
               svg.appendChild(arrow);
               trackPositions([x1, x2], [y1, y2, ym]);
             }
@@ -1365,6 +1559,7 @@ export class Graph {
             const y2 = dst.pos.y;
             const ym = (y1 - node.size.y) + layerHeights[layer] + TRACK_PADDING + trackHeights[layer] / 2 + node.jointOffsets[i];
             const arrow = downwardArrow(x1, y1, x2, y2, ym, dst.block !== null);
+            decorateEdge(arrow, node.block ?? null, dst.block ?? null, "normal");
             svg.appendChild(arrow);
             trackPositions([x1, x2], [y1, y2, ym]);
           }
@@ -1411,42 +1606,47 @@ export class Graph {
     );
     row.setAttribute("data-ig-ins-ptr", `${ins.ptr}`);
     row.setAttribute("data-ig-ins-id", `${ins.id}`);
-
-    const num = document.createElement("td");
-    num.classList.add("ig-ins-num");
-    num.innerText = String(ins.id);
-    row.appendChild(num);
-
-    const opcode = document.createElement("td");
-    opcode.innerHTML = prettyOpcode.replace(/([A-Za-z0-9_]+)#(\d+)/g, (_, name, id) => {
-      return `<span class="ig-use ig-highlightable" data-ig-use="${id}">${name}#${id}</span>`;
-    });
-    row.appendChild(opcode);
-
-    const type = document.createElement("td");
-    type.classList.add("ig-ins-type");
-    type.innerText = ins.type === "None" ? "" : ins.type;
-    row.appendChild(type);
-
-    // Event listeners
-    num.addEventListener("pointerdown", e => {
+    row.addEventListener("pointerdown", e => {
       e.preventDefault();
       e.stopPropagation();
     });
-    num.addEventListener("click", () => {
-      this.toggleInstructionHighlight(ins.ptr);
-    });
 
-    opcode.querySelectorAll<HTMLElement>(".ig-use").forEach(use => {
-      use.addEventListener("pointerdown", e => {
+    if (this.display.showInstructionIds) {
+      const num = document.createElement("td");
+      num.classList.add("ig-ins-num");
+      num.innerText = String(ins.id);
+      row.appendChild(num);
+
+      // Event listeners
+      num.addEventListener("pointerdown", e => {
         e.preventDefault();
         e.stopPropagation();
       });
-      use.addEventListener("click", e => {
-        const id = parseInt(must(use.getAttribute("data-ig-use")), 10) as InsID;
-        this.jumpToInstruction(id, { zoom: 1 });
+      num.addEventListener("click", () => {
+        this.toggleInstructionHighlight(ins.ptr);
       });
+    }
+
+    const opcode = document.createElement("td");
+    this.appendOpcodeWithUses(opcode, prettyOpcode);
+    row.appendChild(opcode);
+
+    if (this.display.showTypes) {
+      const type = document.createElement("td");
+      type.classList.add("ig-ins-type");
+      type.innerText = ins.type === "None" ? "" : ins.type;
+      row.appendChild(type);
+    }
+
+    row.addEventListener("click", e => {
+      const target = e.target as Element | null;
+      if (target?.closest(".ig-use") || target?.closest(".ig-vreg")) {
+        return;
+      }
+      this.onInspect?.({ kind: "mir-instruction", instruction: ins });
     });
+
+    this.insRowByPtr.set(ins.ptr, row);
 
     return row;
   }
@@ -1460,11 +1660,26 @@ export class Graph {
     row.classList.add("ig-ins", "ig-ins-lir", "ig-hotness");
     row.setAttribute("data-ig-ins-ptr", `${ins.ptr}`);
     row.setAttribute("data-ig-ins-id", `${ins.id}`);
+    row.addEventListener("pointerdown", e => {
+      e.preventDefault();
+      e.stopPropagation();
+    });
 
-    const num = document.createElement("td");
-    num.classList.add("ig-ins-num");
-    num.innerText = String(ins.id);
-    row.appendChild(num);
+    if (this.display.showInstructionIds) {
+      const num = document.createElement("td");
+      num.classList.add("ig-ins-num");
+      num.innerText = String(ins.id);
+      row.appendChild(num);
+
+      // Event listeners
+      num.addEventListener("pointerdown", e => {
+        e.preventDefault();
+        e.stopPropagation();
+      });
+      num.addEventListener("click", () => {
+        this.toggleInstructionHighlight(ins.ptr);
+      });
+    }
 
     const opcode = document.createElement("td");
     opcode.innerText = prettyOpcode;
@@ -1502,16 +1717,85 @@ export class Graph {
       }
     }
 
-    // Event listeners
-    num.addEventListener("pointerdown", e => {
-      e.preventDefault();
-      e.stopPropagation();
-    });
-    num.addEventListener("click", () => {
-      this.toggleInstructionHighlight(ins.ptr);
+    row.addEventListener("click", e => {
+      const target = e.target as Element | null;
+      if (target?.closest(".ig-ins-samples")) {
+        return;
+      }
+      this.onInspect?.({ kind: "lir-instruction", instruction: ins });
     });
 
+    this.insRowByPtr.set(ins.ptr, row);
     return row;
+  }
+
+  private appendOpcodeWithUses(target: HTMLElement, opcodeText: string) {
+    const enableVregs = this.display.liveRangesMode && this.liveRangesByVreg.size > 0;
+    const reToken = /([A-Za-z0-9_]+#\d+|v\d+)/g;
+    let lastIndex = 0;
+    for (const match of opcodeText.matchAll(reToken)) {
+      const matchIndex = match.index ?? 0;
+      if (matchIndex > lastIndex) {
+        target.appendChild(document.createTextNode(opcodeText.slice(lastIndex, matchIndex)));
+      }
+
+      const token = match[0];
+      if (token.includes("#")) {
+        const [name, idText] = token.split("#");
+        const id = parseInt(idText, 10) as InsID;
+
+        const use = document.createElement("span");
+        use.classList.add("ig-use", "ig-highlightable");
+        use.setAttribute("data-ig-use", idText);
+        const useName = document.createElement("span");
+        useName.classList.add("ig-use-name");
+        useName.innerText = name;
+        use.appendChild(useName);
+        if (this.display.showUseIds) {
+          const useId = document.createElement("span");
+          useId.classList.add("ig-use-id");
+          useId.innerText = `#${idText}`;
+          use.appendChild(useId);
+        }
+        use.addEventListener("pointerdown", e => {
+          e.preventDefault();
+          e.stopPropagation();
+        });
+        use.addEventListener("click", () => {
+          this.jumpToInstruction(id, { zoom: 1 });
+        });
+
+        const existing = this.useElsByInsId.get(id);
+        if (existing) {
+          existing.push(use);
+        } else {
+          this.useElsByInsId.set(id, [use]);
+        }
+
+        target.appendChild(use);
+      } else if (enableVregs && token.startsWith("v")) {
+        const vreg = token;
+        const el = document.createElement("span");
+        el.classList.add("ig-vreg", "ig-highlightable");
+        el.setAttribute("data-ig-vreg", vreg);
+        el.innerText = vreg;
+        el.addEventListener("pointerdown", e => {
+          e.preventDefault();
+          e.stopPropagation();
+        });
+        el.addEventListener("click", () => {
+          this.toggleLiveRange(vreg);
+        });
+        target.appendChild(el);
+      } else {
+        target.appendChild(document.createTextNode(token));
+      }
+      lastIndex = matchIndex + match[0].length;
+    }
+
+    if (lastIndex < opcodeText.length) {
+      target.appendChild(document.createTextNode(opcodeText.slice(lastIndex)));
+    }
   }
 
   private renderSelection() {
@@ -1524,32 +1808,111 @@ export class Graph {
 
   private removeNonexistentHighlights() {
     this.highlightedInstructions = this.highlightedInstructions.filter(hi => {
-      return this.graphContainer.querySelector<HTMLElement>(`.ig-ins[data-ig-ins-ptr="${hi.ptr}"]`);
+      return this.insRowByPtr.has(hi.ptr);
     });
   }
 
   private updateHighlightedInstructions() {
+    const nextHighlights = new Map<InsPtr, number>();
     for (const hi of this.highlightedInstructions) {
-      assert(this.highlightedInstructions.filter(other => other.ptr === hi.ptr).length === 1, `instruction ${hi.ptr} was highlighted more than once`);
+      assert(!nextHighlights.has(hi.ptr), `instruction ${hi.ptr} was highlighted more than once`);
+      nextHighlights.set(hi.ptr, hi.paletteColor);
     }
 
-    // Clear all existing highlight styles
-    this.graphContainer.querySelectorAll<HTMLElement>(".ig-ins, .ig-use").forEach(ins => {
-      clearHighlight(ins);
-    });
-
-    // Highlight all instructions
-    for (const hi of this.highlightedInstructions) {
-      const color = this.instructionPalette[hi.paletteColor % this.instructionPalette.length];
-      const row = this.graphContainer.querySelector<HTMLElement>(`.ig-ins[data-ig-ins-ptr="${hi.ptr}"]`);
-      if (row) {
-        highlight(row, color);
-
-        const id = this.insIDsByPtr.get(hi.ptr);
-        this.graphContainer.querySelectorAll<HTMLElement>(`.ig-use[data-ig-use="${id}"]`).forEach(use => {
-          highlight(use, color);
-        });
+    for (const [ptr] of this.activeHighlightsByPtr) {
+      if (!nextHighlights.has(ptr)) {
+        const row = this.insRowByPtr.get(ptr);
+        if (row) {
+          clearHighlight(row);
+        }
+        const id = this.insIDsByPtr.get(ptr);
+        if (id !== undefined) {
+          for (const use of this.useElsByInsId.get(id) ?? []) {
+            clearHighlight(use);
+          }
+        }
       }
+    }
+
+    const appliedHighlights = new Map<InsPtr, number>();
+    for (const [ptr, paletteColor] of nextHighlights) {
+      const prevColor = this.activeHighlightsByPtr.get(ptr);
+      if (prevColor === paletteColor) {
+        appliedHighlights.set(ptr, paletteColor);
+        continue;
+      }
+      const row = this.insRowByPtr.get(ptr);
+      if (!row) {
+        continue;
+      }
+      const color = this.instructionPalette[paletteColor % this.instructionPalette.length];
+      highlight(row, color);
+
+      const id = this.insIDsByPtr.get(ptr);
+      if (id !== undefined) {
+        for (const use of this.useElsByInsId.get(id) ?? []) {
+          highlight(use, color);
+        }
+      }
+      appliedHighlights.set(ptr, paletteColor);
+    }
+
+    this.activeHighlightsByPtr = appliedHighlights;
+  }
+
+  private clearLiveRangeHighlights() {
+    for (const ptr of this.liveRangeHighlightedPtrs) {
+      const row = this.insRowByPtr.get(ptr);
+      if (row) {
+        row.classList.remove("ig-live-range");
+      }
+    }
+    this.liveRangeHighlightedPtrs.clear();
+    this.graphContainer.querySelectorAll<HTMLElement>(".ig-vreg-active").forEach(el => {
+      el.classList.remove("ig-vreg-active");
+    });
+  }
+
+  private applyLiveRange(vreg: string) {
+    const liveRange = this.liveRangesByVreg.get(vreg);
+    if (!liveRange) {
+      return;
+    }
+    const instructionIds = Array.from(this.insPtrsByID.keys());
+    for (const interval of liveRange.intervals ?? []) {
+      for (const id of instructionIds) {
+        if (id >= interval.start && id < interval.end) {
+          const ptr = this.insPtrsByID.get(id);
+          if (ptr !== undefined) {
+            const row = this.insRowByPtr.get(ptr);
+            if (row) {
+              row.classList.add("ig-live-range");
+              this.liveRangeHighlightedPtrs.add(ptr);
+            }
+          }
+        }
+      }
+    }
+    this.graphContainer.querySelectorAll<HTMLElement>(`.ig-vreg[data-ig-vreg="${vreg}"]`).forEach(el => {
+      el.classList.add("ig-vreg-active");
+    });
+  }
+
+  toggleLiveRange(vreg: string) {
+    if (!this.display.liveRangesMode) {
+      return;
+    }
+    if (this.activeLiveRangeVreg === vreg) {
+      this.activeLiveRangeVreg = null;
+      this.clearLiveRangeHighlights();
+      return;
+    }
+    this.activeLiveRangeVreg = vreg;
+    this.clearLiveRangeHighlights();
+    this.applyLiveRange(vreg);
+    const liveRange = this.liveRangesByVreg.get(vreg);
+    if (liveRange) {
+      this.onInspect?.({ kind: "vreg", liveRange });
     }
   }
 
@@ -1593,6 +1956,60 @@ export class Graph {
       this.animating = false;
       this.updatePanAndZoom();
     });
+
+    if (this.svg) {
+      this.svg.addEventListener("pointerdown", e => {
+        const target = e.target as Element | null;
+        const edge = target?.closest(".ig-edge");
+        if (edge) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+      });
+      this.svg.addEventListener("pointerover", e => {
+        const target = e.target as Element | null;
+        const edge = target?.closest(".ig-edge") as SVGGElement | null;
+        if (!edge) {
+          return;
+        }
+        if (this.hoveredEdge && this.hoveredEdge !== edge) {
+          this.hoveredEdge.classList.remove("ig-edge-hover");
+        }
+        this.hoveredEdge = edge;
+        edge.classList.add("ig-edge-hover");
+      });
+      this.svg.addEventListener("pointerout", e => {
+        const target = e.target as Element | null;
+        const edge = target?.closest(".ig-edge") as SVGGElement | null;
+        if (!edge) {
+          return;
+        }
+        const related = e.relatedTarget as Element | null;
+        if (related && edge.contains(related)) {
+          return;
+        }
+        edge.classList.remove("ig-edge-hover");
+        if (this.hoveredEdge === edge) {
+          this.hoveredEdge = null;
+        }
+      });
+      this.svg.addEventListener("click", e => {
+        const target = e.target as Element | null;
+        const edge = target?.closest(".ig-edge") as SVGGElement | null;
+        if (!edge) {
+          return;
+        }
+        const dstAttr = edge.getAttribute("data-ig-edge-dst");
+        if (!dstAttr) {
+          return;
+        }
+        e.preventDefault();
+        e.stopPropagation();
+        const dstPtr = parseInt(dstAttr, 10) as BlockPtr;
+        this.setSelection([], dstPtr);
+        void this.jumpToBlock(dstPtr);
+      });
+    }
     this.viewport.addEventListener("pointerdown", e => {
       if (e.pointerType === "mouse" && !(e.button === 0 || e.button === 1)) {
         return;
@@ -2076,7 +2493,7 @@ function downwardArrow(
   const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
   p.setAttribute("d", path);
   p.setAttribute("fill", "none");
-  p.setAttribute("stroke", "black");
+  p.setAttribute("stroke", "currentColor");
   p.setAttribute("stroke-width", `${stroke} `);
   g.appendChild(p);
 
@@ -2125,7 +2542,7 @@ function upwardArrow(
   const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
   p.setAttribute("d", path);
   p.setAttribute("fill", "none");
-  p.setAttribute("stroke", "black");
+  p.setAttribute("stroke", "currentColor");
   p.setAttribute("stroke-width", `${stroke} `);
   g.appendChild(p);
 
@@ -2161,7 +2578,7 @@ function arrowToBackedge(
   const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
   p.setAttribute("d", path);
   p.setAttribute("fill", "none");
-  p.setAttribute("stroke", "black");
+  p.setAttribute("stroke", "currentColor");
   p.setAttribute("stroke-width", `${stroke} `);
   g.appendChild(p);
 
@@ -2200,7 +2617,7 @@ function arrowFromBlockToBackedgeDummy(
   const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
   p.setAttribute("d", path);
   p.setAttribute("fill", "none");
-  p.setAttribute("stroke", "black");
+  p.setAttribute("stroke", "currentColor");
   p.setAttribute("stroke-width", `${stroke} `);
   g.appendChild(p);
 
@@ -2229,7 +2646,7 @@ function loopHeaderArrow(
   const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
   p.setAttribute("d", path);
   p.setAttribute("fill", "none");
-  p.setAttribute("stroke", "black");
+  p.setAttribute("stroke", "currentColor");
   p.setAttribute("stroke-width", `${stroke} `);
   g.appendChild(p);
 
@@ -2243,6 +2660,8 @@ function arrowhead(x: number, y: number, rot: number, size = 5): SVGElement {
   const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
   p.setAttribute("d", `M 0 0 L ${-size} ${size * 1.5} L ${size} ${size * 1.5} Z`);
   p.setAttribute("transform", `translate(${x}, ${y}) rotate(${rot})`);
+  p.setAttribute("fill", "currentColor");
+  p.setAttribute("stroke", "currentColor");
   return p;
 }
 
