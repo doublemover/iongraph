@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "functions": [
+    {
+      "name": "live-ranges",
+      "passes": [
+        {
+          "name": "LivePass",
+          "mir": {
+            "blocks": [
+              {
+                "ptr": 1,
+                "id": 0,
+                "loopDepth": 0,
+                "attributes": [],
+                "predecessors": [],
+                "successors": [],
+                "instructions": [
+                  {
+                    "ptr": 1,
+                    "id": 1,
+                    "opcode": "Def v1",
+                    "attributes": [],
+                    "inputs": [],
+                    "uses": [],
+                    "memInputs": [],
+                    "type": "int32"
+                  },
+                  {
+                    "ptr": 2,
+                    "id": 2,
+                    "opcode": "Use v1",
+                    "attributes": [],
+                    "inputs": [],
+                    "uses": [],
+                    "memInputs": [],
+                    "type": "int32"
+                  },
+                  {
+                    "ptr": 3,
+                    "id": 3,
+                    "opcode": "Return",
+                    "attributes": [],
+                    "inputs": [],
+                    "uses": [],
+                    "memInputs": [],
+                    "type": "void"
+                  }
+                ]
+              }
+            ]
+          },
+          "lir": {
+            "blocks": []
+          },
+          "liveRanges": {
+            "vregs": [
+              {
+                "vreg": "v1",
+                "intervals": [
+                  {
+                    "start": 1,
+                    "end": 3
+                  }
+                ],
+                "reg": "r1"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

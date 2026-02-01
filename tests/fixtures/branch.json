@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "functions": [
+    {
+      "name": "branch",
+      "passes": [
+        {
+          "name": "BranchPass",
+          "mir": {
+            "blocks": [
+              {
+                "ptr": 1,
+                "id": 0,
+                "loopDepth": 0,
+                "attributes": [],
+                "predecessors": [],
+                "successors": [1, 2],
+                "instructions": [
+                  {
+                    "ptr": 1,
+                    "id": 1,
+                    "opcode": "Test",
+                    "attributes": [],
+                    "inputs": [],
+                    "uses": [],
+                    "memInputs": [],
+                    "type": "int32"
+                  }
+                ]
+              },
+              {
+                "ptr": 2,
+                "id": 1,
+                "loopDepth": 0,
+                "attributes": [],
+                "predecessors": [0],
+                "successors": [],
+                "instructions": [
+                  {
+                    "ptr": 2,
+                    "id": 2,
+                    "opcode": "Then",
+                    "attributes": [],
+                    "inputs": [],
+                    "uses": [],
+                    "memInputs": [],
+                    "type": "void"
+                  }
+                ]
+              },
+              {
+                "ptr": 3,
+                "id": 2,
+                "loopDepth": 0,
+                "attributes": [],
+                "predecessors": [0],
+                "successors": [],
+                "instructions": [
+                  {
+                    "ptr": 3,
+                    "id": 3,
+                    "opcode": "Else",
+                    "attributes": [],
+                    "inputs": [],
+                    "uses": [],
+                    "memInputs": [],
+                    "type": "void"
+                  }
+                ]
+              }
+            ]
+          },
+          "lir": {
+            "blocks": []
+          }
+        }
+      ]
+    }
+  ]
+}

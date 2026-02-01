@@ -10,7 +10,8 @@ console.log("Done.");
 function runTsc() {
   console.log("Running tsc...");
   return new Promise((resolve, reject) => {
-    const tsc = spawn("./node_modules/.bin/tsc", [], { stdio: "inherit" });
+    const tscPath = join("node_modules", "typescript", "bin", "tsc");
+    const tsc = spawn(process.execPath, [tscPath], { stdio: "inherit" });
     tsc.on("close", code => {
       if (code === 0) {
         resolve();

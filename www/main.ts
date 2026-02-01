@@ -2,16 +2,60 @@ import { migrate, type IonJSON, type Func, type SampleCounts } from "../src/iong
 import { must } from "../src/utils.js";
 import { E } from "../src/dom.js";
 import { GraphViewer } from "../src/GraphViewer.js";
+import type { GraphDisplayOptions, GraphOptions } from "../src/Graph.js";
 
 const searchParams = new URL(window.location.toString()).searchParams;
 
 const initialFuncIndex = searchParams.has("func") ? parseInt(searchParams.get("func")!, 10) : undefined;
 const initialPass = searchParams.has("pass") ? parseInt(searchParams.get("pass")!, 10) : undefined;
+const displayStorageKey = "iongraph.displayOptions";
+
+const defaultDisplayOptions: GraphDisplayOptions = {
+  showInstructionIds: true,
+  showTypes: true,
+  showUseIds: true,
+  compactMode: "default",
+  collapseEmptyBlocks: false,
+  liveRangesMode: false,
+};
+
+function loadDisplayOptions(): GraphDisplayOptions {
+  try {
+    const raw = window.localStorage.getItem(displayStorageKey);
+    if (!raw) {
+      return { ...defaultDisplayOptions };
+    }
+    const parsed = JSON.parse(raw) as Partial<GraphDisplayOptions>;
+    const compactMode = parsed.compactMode;
+    const normalizedCompactMode = (
+      compactMode === "compact" || compactMode === "verbose" || compactMode === "default"
+        ? compactMode
+        : defaultDisplayOptions.compactMode
+    );
+    return {
+      ...defaultDisplayOptions,
+      ...parsed,
+      compactMode: normalizedCompactMode,
+    };
+  } catch {
+    return { ...defaultDisplayOptions };
+  }
+}
+
+function saveDisplayOptions(options: GraphDisplayOptions) {
+  try {
+    window.localStorage.setItem(displayStorageKey, JSON.stringify(options));
+  } catch {
+    // Ignore persistence failures.
+  }
+}
 
 interface MenuBarProps {
   browse?: boolean,
   export?: boolean,
   funcSelected: (func: Func | null) => void,
+  displayOptions?: GraphDisplayOptions,
+  displayOptionsChanged?: (options: GraphDisplayOptions) => void,
 }
 
 class MenuBar {
@@ -20,6 +64,17 @@ class MenuBar {
   funcSelectorNone: HTMLElement;
   funcName: HTMLElement;
   exportButton: HTMLButtonElement | null;
+  displayOptions: GraphDisplayOptions | null;
+  displayOptionsChanged: ((options: GraphDisplayOptions) => void) | null;
+  displayControls: HTMLElement | null;
+  displayInputs: {
+    showInstructionIds: HTMLInputElement,
+    showTypes: HTMLInputElement,
+    showUseIds: HTMLInputElement,
+    compactMode: HTMLSelectElement,
+    collapseEmptyBlocks: HTMLInputElement,
+    liveRangesMode: HTMLInputElement,
+  } | null;
 
   ionjson: IonJSON | null;
   funcIndex: number;
@@ -27,6 +82,10 @@ class MenuBar {
 
   constructor(props: MenuBarProps) {
     this.exportButton = null;
+    this.displayOptions = props.displayOptions ? { ...props.displayOptions } : null;
+    this.displayOptionsChanged = props.displayOptionsChanged ?? null;
+    this.displayControls = null;
+    this.displayInputs = null;
 
     this.ionjson = null;
     this.funcIndex = initialFuncIndex ?? 0;
@@ -46,6 +105,12 @@ class MenuBar {
     ]);
     this.funcSelectorNone = E("div", [], () => { }, ["No functions to display."]);
     this.funcName = E("div");
+    if (this.displayOptions && this.displayOptionsChanged) {
+      const built = this.buildDisplayControls(this.displayOptions);
+      this.displayControls = built.root;
+      this.displayInputs = built.inputs;
+    }
+
     this.root = E("div", ["ig-bb", "ig-flex", "ig-bg-white"], () => { }, [
       E("div", ["ig-pv2", "ig-ph3", "ig-flex", "ig-g2", "ig-items-center", "ig-br", "ig-hide-if-empty"], () => { }, [
         props.browse && E("div", [], () => { }, [
@@ -66,6 +131,7 @@ class MenuBar {
       E("div", ["ig-flex-grow-1", "ig-pv2", "ig-ph3", "ig-flex", "ig-g2", "ig-items-center"], () => { }, [
         this.funcName,
         E("div", ["ig-flex-grow-1"]),
+        this.displayControls,
         props.export && E("div", [], () => { }, [
           E("button", [], button => {
             this.exportButton = button;
@@ -78,6 +144,87 @@ class MenuBar {
     ]);
 
     this.update();
+  }
+
+  private buildDisplayControls(options: GraphDisplayOptions) {
+    const update = (next: GraphDisplayOptions) => {
+      this.displayOptions = { ...next };
+      this.displayOptionsChanged?.(this.displayOptions);
+    };
+
+    const makeCheckbox = (labelText: string, attr: keyof GraphDisplayOptions, dataId: string) => {
+      const input = E("input", [], input => {
+        input.type = "checkbox";
+        input.checked = options[attr] as boolean;
+        input.setAttribute("data-ig-display", dataId);
+        input.addEventListener("change", () => {
+          update({ ...must(this.displayOptions), [attr]: input.checked });
+        });
+      });
+      const label = E("label", ["ig-flex", "ig-items-center", "ig-g1", "ig-f6"], () => { }, [
+        input,
+        labelText,
+      ]);
+      return { label, input };
+    };
+
+    const showInstructionIds = makeCheckbox("IDs", "showInstructionIds", "show-instruction-ids");
+    const showTypes = makeCheckbox("Types", "showTypes", "show-types");
+    const showUseIds = makeCheckbox("Use IDs", "showUseIds", "show-use-ids");
+    const collapseEmptyBlocks = makeCheckbox("Collapse empty", "collapseEmptyBlocks", "collapse-empty-blocks");
+    const liveRangesMode = makeCheckbox("Live ranges", "liveRangesMode", "live-ranges-mode");
+
+    const compactMode = E("select", ["ig-f6"], select => {
+      select.setAttribute("data-ig-display", "compact-mode");
+      for (const mode of ["default", "compact", "verbose"]) {
+        select.appendChild(E("option", [], option => {
+          option.value = mode;
+          option.innerText = mode;
+        }));
+      }
+      select.value = options.compactMode;
+      select.addEventListener("change", () => {
+        update({ ...must(this.displayOptions), compactMode: select.value as GraphDisplayOptions["compactMode"] });
+      });
+    });
+
+    const root = E("div", ["ig-flex", "ig-items-center", "ig-g2"], () => { }, [
+      E("div", ["ig-f6", "ig-text-dim"], () => { }, ["Display"]),
+      showInstructionIds.label,
+      showTypes.label,
+      showUseIds.label,
+      E("label", ["ig-flex", "ig-items-center", "ig-g1", "ig-f6"], () => { }, [
+        E("span", ["ig-text-dim"], () => { }, ["Mode"]),
+        compactMode,
+      ]),
+      collapseEmptyBlocks.label,
+      liveRangesMode.label,
+    ]);
+
+    return {
+      root,
+      inputs: {
+        showInstructionIds: showInstructionIds.input,
+        showTypes: showTypes.input,
+        showUseIds: showUseIds.input,
+        compactMode,
+        collapseEmptyBlocks: collapseEmptyBlocks.input,
+        liveRangesMode: liveRangesMode.input,
+      },
+    };
+  }
+
+  setDisplayOptions(options: GraphDisplayOptions) {
+    if (!this.displayInputs) {
+      return;
+    }
+    this.displayOptions = { ...options };
+    this.displayInputs.showInstructionIds.checked = options.showInstructionIds;
+    this.displayInputs.showTypes.checked = options.showTypes;
+    this.displayInputs.showUseIds.checked = options.showUseIds;
+    this.displayInputs.compactMode.value = options.compactMode;
+    this.displayInputs.collapseEmptyBlocks.checked = options.collapseEmptyBlocks;
+    this.displayInputs.liveRangesMode.checked = options.liveRangesMode;
   }
 
   async fileSelected(file: File) {
@@ -148,17 +295,30 @@ export class WebUI {
   func: Func | null;
   sampleCountsFromFile: SampleCounts | undefined;
   graph: GraphViewer | null;
+  graphOptions: GraphOptions;
+  displayOptions: GraphDisplayOptions;
 
   constructor() {
+    this.displayOptions = loadDisplayOptions();
+    const collapseParam = searchParams.get("collapseEmptyBlocks");
+    if (collapseParam === "1" || collapseParam === "true") {
+      this.displayOptions.collapseEmptyBlocks = true;
+    }
+
+    this.graphOptions = { display: this.displayOptions };
+
     this.menuBar = new MenuBar({
       browse: true,
       export: true,
       funcSelected: f => this.switchFunc(f),
+      displayOptions: this.displayOptions,
+      displayOptionsChanged: options => this.updateDisplayOptions(options),
     });
 
     this.func = null;
     this.sampleCountsFromFile = undefined;
     this.graph = null;
+    this.menuBar.setDisplayOptions(this.displayOptions);
 
     this.loadStuffFromQueryParams();
 
@@ -180,6 +340,7 @@ export class WebUI {
         func: this.func,
         pass: initialPass,
         sampleCounts: this.sampleCountsFromFile,
+        graphOptions: this.graphOptions,
       });
     }
   }
@@ -213,6 +374,17 @@ export class WebUI {
     this.func = func;
     this.update();
   }
+
+  updateDisplayOptions(options: GraphDisplayOptions) {
+    this.displayOptions = { ...options };
+    this.graphOptions = { display: this.displayOptions };
+    saveDisplayOptions(this.displayOptions);
+    if (this.graph) {
+      this.graph.setGraphOptions(this.graphOptions);
+    } else {
+      this.update();
+    }
+  }
 }
 
 export class StandaloneUI {
@@ -222,6 +394,8 @@ export class StandaloneUI {
 
   func: Func | null;
   graph: GraphViewer | null;
+  graphOptions: GraphOptions;
+  displayOptions: GraphDisplayOptions;
 
   constructor() {
     this.menuBar = new MenuBar({
@@ -230,6 +404,8 @@ export class StandaloneUI {
 
     this.func = null;
     this.graph = null;
+    this.displayOptions = { ...defaultDisplayOptions };
+    this.graphOptions = { display: this.displayOptions };
 
     this.graphContainer = E("div", ["ig-relative", "ig-flex-basis-0", "ig-flex-grow-1", "ig-overflow-hidden"]);
     this.root = E("div", ["ig-absolute", "ig-absolute-fill", "ig-flex", "ig-flex-column"], () => { }, [
@@ -246,6 +422,7 @@ export class StandaloneUI {
       this.graph = new GraphViewer(this.graphContainer, {
         func: this.func,
         pass: initialPass,
+        graphOptions: this.graphOptions,
       });
     }
   }

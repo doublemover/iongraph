@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "functions": [
+    {
+      "name": "metadata",
+      "passes": [
+        {
+          "name": "MetaPass",
+          "mir": {
+            "blocks": [
+              {
+                "ptr": 1,
+                "id": 0,
+                "loopDepth": 0,
+                "attributes": [],
+                "predecessors": [],
+                "successors": [],
+                "source": {
+                  "script": "foo.js",
+                  "line": 12,
+                  "column": 3,
+                  "bytecodeOffset": 42
+                },
+                "metadata": {
+                  "aliasInfo": "MayAlias"
+                },
+                "instructions": [
+                  {
+                    "ptr": 1,
+                    "id": 1,
+                    "opcode": "Start",
+                    "attributes": [],
+                    "inputs": [],
+                    "uses": [],
+                    "memInputs": [],
+                    "type": "void",
+                    "source": {
+                      "script": "foo.js",
+                      "line": 12,
+                      "column": 5
+                    }
+                  },
+                  {
+                    "ptr": 2,
+                    "id": 2,
+                    "opcode": "MetaOp",
+                    "attributes": [],
+                    "inputs": [],
+                    "uses": [],
+                    "memInputs": [],
+                    "type": "int32",
+                    "metadata": {
+                      "resumePoint": {
+                        "kind": "after",
+                        "pc": 7
+                      },
+                      "wasmRefType": "externref"
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "lir": {
+            "blocks": []
+          }
+        }
+      ]
+    }
+  ]
+}
